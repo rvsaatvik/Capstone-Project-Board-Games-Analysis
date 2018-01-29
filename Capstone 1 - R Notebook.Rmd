@@ -1,0 +1,159 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Adding required libraries
+
+```{r}
+library(dplyr) # for data cleaning
+library(ISLR) # for college dataset
+library(cluster) # for gower similarity and pam
+library(Rtsne) # for t-SNE plot
+library(ggplot2) # for visualization
+library(splitstackshape) # for splitting the column
+```
+
+Loading the data and creating a backup of the initial dataset.
+
+
+```{r}
+df = read.csv("~/My Jupyter Notebooks/Capstone1/bgg_db_2017_04.csv")
+backup = df
+df = backup
+```
+
+```{r}
+names(df)
+```
+
+Selecting only the required variables for clustering
+```{r}
+df = df %>% dplyr::select(names,min_players,max_players,avg_time,min_time,max_time,age,weight,category)
+head(df)
+```
+
+```{r}
+df = cSplit(df, "category", ",")
+```
+
+The concept of gower's distance is quite simple.
+For each variable type, a particular distance metric that works well for that type is used and scaled to fall between 0 and 1. Then, a linear combination using user-specified weights (most simply an average) is calculated to create the final distance matrix. The metrics used for each data type are described below:
+Gower distance can be calculated in one line using the daisy function
+
+```{r}
+gower_dist <- daisy(df[, -1],
+                    metric = "gower",
+                    type = list(logratio = 3))
+
+summary(gower_dist)
+gower_mat <- as.matrix(gower_dist)
+```
+
+
+
+Output most similar pair and dissimilar pair
+```{r}
+df[
+  which(gower_mat == min(gower_mat[gower_mat != min(gower_mat)]),
+        arr.ind = TRUE)[1, ], ]
+
+```
+
+```{r}
+df[
+  which(gower_mat == max(gower_mat[gower_mat != max(gower_mat)]),
+        arr.ind = TRUE)[1, ], ]
+```
+
+Partitioning around medoids is an iterative clustering procedure with the following steps:
+
+Choose k random entities to become the medoids
+Assign every entity to its closest medoid (using our custom distance matrix in this case)
+For each cluster, identify the observation that would yield the lowest average distance if it were to be re-assigned as the medoid. If so, make this observation the new medoid.
+If at least one medoid has changed, return to step 2. Otherwise, end the algorithm.
+If you know the k-means algorithm, this might look very familiar. In fact, both approaches are identical, except k-means has cluster centers defined by Euclidean distance (i.e., centroids), while cluster centers for PAM are restricted to be the observations themselves (i.e., medoids).
+
+```{r}
+
+sil_width <- c(NA)
+
+for(i in 2:10){
+  
+  pam_fit <- pam(gower_dist,
+                 diss = TRUE,
+                 k = i)
+  
+  sil_width[i] <- pam_fit$silinfo$avg.width
+  
+}
+
+# Plot sihouette width (higher is better)
+
+plot(1:10, sil_width,
+     xlab = "Number of clusters",
+     ylab = "Silhouette Width")
+lines(1:10, sil_width)
+
+```
+
+Creating the clusters using the distance matrix
+```{r}
+pam_fit <- pam(gower_dist, diss = TRUE, k = 7)
+
+pam_results <- df %>%
+  dplyr::select(-names) %>%
+  mutate(cluster = pam_fit$clustering) %>%
+  group_by(cluster) %>%
+  do(the_summary = summary(.))
+```
+
+```{r}
+# Clustering Summaries
+pam_results$the_summary
+```
+
+```{r}
+# Median of each cluster
+df[pam_fit$medoids, ]
+```
+
+
+
+
+One way to visualize many variables in a lower dimensional space is with t-distributed stochastic neighborhood embedding, or t-SNE.
+This method is a dimension reduction technique that tries to preserve local structure so as to make clusters visible in a 2D or 3D visualization
+
+```{r}
+
+tsne_obj <- Rtsne(gower_dist, is_distance = TRUE)
+
+tsne_data <- tsne_obj$Y %>%
+  data.frame() %>%
+  setNames(c("X", "Y")) %>%
+  mutate(cluster = factor(pam_fit$clustering),
+         name = df$names)
+
+ggplot(aes(x = X, y = Y), data = tsne_data) +
+  geom_point(aes(color = cluster))
+
+tsne_data %>%
+  filter(X > 15 & X < 25,
+         Y > -15 & Y < -10) %>%
+  left_join(college_clean, by = "name") %>%
+  collect %>%
+  .[["name"]]
+```
+
+Feature Selection to understand what drives geek ratings
+
+
+```{r}
+library(party)
+
+cf1 <- cforest(geek_rating ~ . , data= df[-1], control=cforest_unbiased(mtry=2,ntree=50)) # fit the random forest
+varimp(cf1) # get variable importance, based on mean decrease in accuracy
+varimp(cf1, conditional=TRUE)  # conditional=True, adjusts for correlations between predictors
+varimpAUC(cf1)  # more robust towards class imbalance.
+```
+
